@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv lock --check
+      - run: uv sync --frozen --dev
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run mypy
+      - run: uv run pytest -m "not live_contract and not scheduled_eval"
+      - run: uv run auction-eval --threshold 1.0
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: get-auction-list-api:ci
+          push: false
+      - run: |
+          docker run --detach --name api \
+            -e GET_AUCTION_LIST_ENVIRONMENT=test \
+            -p 127.0.0.1:8000:8000 get-auction-list-api:ci
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8000/health/live; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs api
+          exit 1

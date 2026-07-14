@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: bash -c 'cd get-auction-list-api && uv run ruff check --fix .'
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: bash -c 'cd get-auction-list-api && uv run ruff format .'
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        entry: bash -c 'cd get-auction-list-api && uv run mypy'
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]
+      - id: pytest
+        name: pytest
+        entry: bash -c 'cd get-auction-list-api && uv run pytest'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

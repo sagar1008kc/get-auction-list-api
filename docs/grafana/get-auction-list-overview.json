@@ -1,0 +1,30 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {"id": 1, "title": "API request rate", "type": "timeseries", "targets": [{"expr": "sum by (route) (rate(get_auction_list_http_requests_total[5m]))"}]},
+    {"id": 2, "title": "API error ratio", "type": "timeseries", "targets": [{"expr": "sum(rate(get_auction_list_http_requests_total{status_class=~\"4xx|5xx\"}[5m])) / clamp_min(sum(rate(get_auction_list_http_requests_total[5m])), 0.001)"}]},
+    {"id": 3, "title": "HTTP P95 latency", "type": "timeseries", "targets": [{"expr": "histogram_quantile(0.95, sum by (le, route) (rate(get_auction_list_http_request_duration_seconds_bucket[5m])))"}]},
+    {"id": 4, "title": "Stream TTFT P95", "type": "timeseries", "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(get_auction_list_stream_ttft_seconds_bucket[5m])))"}]},
+    {"id": 5, "title": "Graph node P95", "type": "timeseries", "targets": [{"expr": "histogram_quantile(0.95, sum by (le, node) (rate(get_auction_list_graph_node_duration_seconds_bucket[5m])))"}]},
+    {"id": 6, "title": "Retrieval outcomes", "type": "timeseries", "targets": [{"expr": "sum by (outcome) (rate(get_auction_list_retrieval_requests_total[5m]))"}]},
+    {"id": 7, "title": "Auction search outcomes", "type": "timeseries", "targets": [{"expr": "sum by (outcome) (rate(get_auction_list_auction_searches_total[5m]))"}]},
+    {"id": 8, "title": "MCP and tool failures", "type": "timeseries", "targets": [{"expr": "sum by (tool) (rate(get_auction_list_tool_calls_total{outcome=\"error\"}[5m]))"}]},
+    {"id": 9, "title": "Source health", "type": "stat", "targets": [{"expr": "get_auction_list_source_health"}]},
+    {"id": 10, "title": "Ingestion throughput", "type": "timeseries", "targets": [{"expr": "sum by (operation, outcome) (rate(get_auction_list_ingestion_jobs_total[15m]))"}]},
+    {"id": 11, "title": "Database pool", "type": "timeseries", "targets": [{"expr": "get_auction_list_db_pool_connections"}]},
+    {"id": 12, "title": "Model tokens", "type": "timeseries", "targets": [{"expr": "sum by (model, direction) (rate(get_auction_list_model_tokens_total[1h]))"}]},
+    {"id": 13, "title": "Model cost USD", "type": "timeseries", "targets": [{"expr": "sum by (model) (increase(get_auction_list_model_cost_usd_total[1h]))"}]},
+    {"id": 14, "title": "Feedback", "type": "timeseries", "targets": [{"expr": "sum by (rating, cta_clicked) (rate(get_auction_list_feedback_total[1h]))"}]}
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["get-auction-list", "api", "ai"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "GetAuctionList API / Graph / Retrieval / Sources / Cost",
+  "uid": "get-auction-list-overview",
+  "version": 1
+}

@@ -1,0 +1,91 @@
+[project]
+name = "get-auction-list-api"
+version = "0.1.0"
+description = "Backend foundations for the GetAuctionList AI Front Door"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "asyncpg>=0.31.0",
+    "beautifulsoup4>=4.15.0",
+    "fastapi>=0.139.0",
+    "httpx>=0.28.1",
+    "langgraph>=1.2.9",
+    "langgraph-checkpoint-postgres>=3.1.0",
+    "mcp>=1.28.1",
+    "openai>=2.45.0",
+    "openpyxl>=3.1.5",
+    "opentelemetry-api>=1.43.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.43.0",
+    "opentelemetry-instrumentation-asyncpg>=0.64b0",
+    "opentelemetry-instrumentation-fastapi>=0.64b0",
+    "opentelemetry-instrumentation-httpx>=0.64b0",
+    "opentelemetry-sdk>=1.43.0",
+    "prometheus-client>=0.25.0",
+    "psycopg[binary,pool]>=3.3.4",
+    "pydantic-settings>=2.14.2",
+    "pyjwt[crypto]>=2.13.0",
+    "pymupdf>=1.28.0",
+    "structlog>=26.1.0",
+    "uvicorn[standard]>=0.51.0",
+]
+
+[project.scripts]
+auction-api = "get_auction_list_api.server:main"
+auction-eval = "get_auction_list_api.evaluation.runner:main"
+auction-ingestion-worker = "get_auction_list_api.ingestion.worker:main"
+auction-mcp = "get_auction_list_api.public_records.cli:main"
+
+[project.optional-dependencies]
+langfuse = [
+    "langfuse>=4.14.0",
+]
+evaluation = [
+    "ragas>=0.4.3",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.5.0",
+    "mypy>=2.3.0",
+    "pre-commit>=4.6.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.21",
+    "types-openpyxl>=3.1.5.20260518",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration_mock: mocked cross-component integration tests",
+    "live_contract: opt-in tests against approved live source contracts",
+    "scheduled_eval: opt-in slower or vendor-backed scheduled evaluations",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
