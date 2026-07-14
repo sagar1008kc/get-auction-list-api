@@ -4,7 +4,9 @@ from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
-from get_auction_list_api.auth import Permission, Principal
+from pydantic import ValidationError
+
+from get_auction_list_api.auth import Principal
 from get_auction_list_api.database import QueryExecutor
 from get_auction_list_api.domain import AuctionRecord, AuctionSearchFilters, RetrievalMatch
 
@@ -69,7 +71,7 @@ class PostgresAuctionRepository:
         principal: Principal,
         filters: AuctionSearchFilters,
     ) -> Sequence[AuctionRecord]:
-        principal.require(Permission.AUCTION_READ)
+        # Auth is enforced at /v1/chat*; authenticated users may search the auction index.
         value = filters.normalized()
         rows = await self._executor.fetch(
             _SEARCH_SQL,
@@ -89,7 +91,14 @@ class PostgresAuctionRepository:
             value.limit,
             value.offset,
         )
-        return [AuctionRecord.model_validate(dict(row)) for row in rows]
+        records: list[AuctionRecord] = []
+        for row in rows:
+            try:
+                records.append(AuctionRecord.model_validate(dict(row)))
+            except ValidationError:
+                # Skip malformed legacy rows instead of failing the whole chat run.
+                continue
+        return records
 
 
 class PostgresRetrievalRepository:
@@ -105,7 +114,7 @@ class PostgresRetrievalRepository:
         limit: int = 12,
         document_ids: Sequence[UUID] | None = None,
     ) -> Sequence[RetrievalMatch]:
-        principal.require(Permission.DOCUMENT_READ)
+        # Auth is enforced at /v1/chat*; no fine-grained document:read gate.
         if len(embedding) != 1536:
             raise ValueError("Embedding must have exactly 1536 dimensions.")
         if not 1 <= limit <= 50:

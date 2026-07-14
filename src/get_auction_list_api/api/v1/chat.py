@@ -19,6 +19,7 @@ from get_auction_list_api.errors import AppError, ErrorCode
 from get_auction_list_api.graph.context import bind_graph_context
 from get_auction_list_api.graph.state import AgentState
 from get_auction_list_api.graph.workflow import ControlledAgentGraph
+from get_auction_list_api.observability.logging import get_logger
 from get_auction_list_api.schemas import (
     ChatRequest,
     FeedbackRequest,
@@ -124,6 +125,12 @@ async def chat_stream(
                 raise
             except Exception:
                 STREAMS.labels("server_error").inc()
+                get_logger().exception(
+                    "chat_stream_failed",
+                    run_id=state["run_id"],
+                    request_id=state["request_id"],
+                    correlation_id=state["correlation_id"],
+                )
                 yield _event(
                     event_id,
                     "run.failed",

@@ -32,7 +32,11 @@ from get_auction_list_api.graph import ControlledAgentGraph
 from get_auction_list_api.graph.adapters import build_graph_services
 from get_auction_list_api.graph.checkpoint import PostgresCheckpointRuntime
 from get_auction_list_api.graph.context import current_graph_context
-from get_auction_list_api.graph.llm import OpenAIGroundedSynthesizer, OpenAIIntentClassifier
+from get_auction_list_api.graph.llm import (
+    OpenAIEntityExtractor,
+    OpenAIGroundedSynthesizer,
+    OpenAIIntentClassifier,
+)
 from get_auction_list_api.ingestion.operations import PostgresIngestionOperations
 from get_auction_list_api.llm import (
     OpenAIEmbeddingProvider,
@@ -128,6 +132,7 @@ def create_app(
         auction_service = None
         classifier = None
         synthesizer = None
+        entity_extractor = None
         if resolved_settings.openai_api_key is not None:
             openai_client = create_openai_client(
                 api_key=resolved_settings.openai_api_key.get_secret_value(),
@@ -141,6 +146,7 @@ def create_app(
             )
             classifier = OpenAIIntentClassifier(structured_model)
             synthesizer = OpenAIGroundedSynthesizer(structured_model)
+            entity_extractor = OpenAIEntityExtractor(structured_model)
         if database is not None:
             auction_service = AuctionSearchService(PostgresAuctionRepository(database))
             if openai_client is not None:
@@ -164,6 +170,7 @@ def create_app(
             trace_id_resolver=lambda: current_graph_context().trace_id,
             classifier=classifier,
             synthesizer=synthesizer,
+            entity_extractor=entity_extractor,
         )
         resolved_dependencies = AppDependencies(
             settings=resolved_settings,

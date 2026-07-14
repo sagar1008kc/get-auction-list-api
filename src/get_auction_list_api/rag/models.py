@@ -1,10 +1,11 @@
 """Strict evidence, filter, context, and citation contracts."""
 
+import json
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RetrievalChannel(StrEnum):
@@ -30,6 +31,19 @@ class RetrievedEvidence(BaseModel):
     token_count: int = Field(ge=0)
     approved: bool
     untrusted: bool = True
+
+    @field_validator("source_coordinates", mode="before")
+    @classmethod
+    def coerce_source_coordinates(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value) if value else {}
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return value
 
 
 class RetrievalFilters(BaseModel):

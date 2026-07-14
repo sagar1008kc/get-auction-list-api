@@ -77,8 +77,20 @@ _MORTGAGOR = re.compile(
     r"((?:[A-Za-z][A-Za-z'-]{0,39})(?:\s+[A-Za-z][A-Za-z'-]{0,39}){0,2})\b",
     re.IGNORECASE,
 )
+_LAST_FIRST_NAME = re.compile(
+    r"\b([A-Za-z][A-Za-z'-]{1,39}),\s*([A-Za-z][A-Za-z'-]{1,39}"
+    r"(?:\s+[A-Za-z][A-Za-z'-]{1,39})?)\b"
+)
+_DETAIL_ABOUT = re.compile(
+    r"\b(?:details?|info|information|tell me|who is|find|search|look\s*up|show)\b"
+    r".{0,40}\b(?:about|for|on)\b",
+    re.IGNORECASE,
+)
 _ZIP = re.compile(r"\b(\d{5}(?:-\d{4})?)\b")
-_YEAR = re.compile(r"\b(?:report\s+year|year|in)\s+(20\d{2})\b", re.I)
+_YEAR = re.compile(
+    r"\b(?:report\s+year|year|in)\s+(20\d{2})\b|(?<!\d)(20\d{2})(?!\d)",
+    re.I,
+)
 _CITY = re.compile(
     r"\b(?:in|at)\s+([A-Za-z][A-Za-z .'-]{1,40}?)(?=\s+(?:tx|texas|\d{5})|,|$)",
     re.IGNORECASE,
@@ -121,8 +133,34 @@ _MONTH_NAMES = {
         start=1,
     )
 }
-_AUCTION_WORDS = frozenset({"auction", "trustee", "mortgagor", "foreclosure", "trustee sale"})
+_AUCTION_WORDS = frozenset(
+    {
+        "auction",
+        "auctions",
+        "listing",
+        "listings",
+        "trustee",
+        "mortgagor",
+        "foreclosure",
+        "trustee sale",
+        "how many",
+    }
+)
 _POLICY_WORDS = frozenset({"privacy", "disclaimer", "policy", "terms", "terms of use"})
+_SCHEDULE_WORDS = frozenset(
+    {
+        "schedule",
+        "calendar",
+        "sale date",
+        "sale dates",
+        "when is",
+        "when will",
+        "trustee sale schedule",
+        "trustee sales schedule",
+        "foreclosure schedule",
+        "sale calendar",
+    }
+)
 _PUBLIC_WORDS = frozenset(
     {
         "wcad",
@@ -277,11 +315,99 @@ def _normalize_text(value: str) -> str:
     return " ".join(tokens)
 
 
+def _contains_phrase(text: str, phrase: str) -> bool:
+    """Match whole words/phrases so 'GetAuctionList' does not imply 'auction'."""
+
+    if " " in phrase:
+        return phrase in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", text) is not None
+
+
+def _looks_like_storage_lookup(message: str) -> bool:
+    """Person names, LAST FIRST forms, or addresses → indexed spreadsheet search."""
+
+    text = message.casefold().strip()
+    if not text:
+        return False
+    if _LAST_FIRST_NAME.search(message):
+        return True
+    if _ADDRESS.search(message):
+        return True
+    if _DETAIL_ABOUT.search(message) and re.search(r"[a-z]{2,}", text):
+        # "provide details about zavala, angela" / "who is angela zavala"
+        remainder = re.sub(
+            r"\b(?:provide|details?|info|information|tell me|who is|find|search|"
+            r"look\s*up|show|about|for|on|me|the|a|an|please)\b",
+            " ",
+            text,
+            flags=re.I,
+        )
+        tokens = [token for token in remainder.split() if len(token) > 1]
+        return len(tokens) >= 1
+    # Bare "First Last" or "LAST FIRST" two-token name queries
+    tokens = [token for token in re.sub(r"[^a-z0-9,\s'-]", " ", text).split() if token]
+    if len(tokens) in {2, 3} and all(token.replace("'", "").isalpha() for token in tokens):
+        stop = {
+            "what",
+            "when",
+            "where",
+            "how",
+            "why",
+            "is",
+            "the",
+            "a",
+            "an",
+            "for",
+            "july",
+            "august",
+            "williamson",
+            "county",
+            "schedule",
+            "policy",
+            "privacy",
+            "disclaimer",
+        }
+        if not any(token in stop for token in tokens):
+            return True
+    return False
+
+
+def _wants_indexed_auction_rows(text: str) -> bool:
+    """True when the user asks for spreadsheet-index filters, not only a county calendar."""
+
+    if _looks_like_storage_lookup(text):
+        return True
+    if _contains_phrase(text, "mortgagor"):
+        return True
+    if "auction list" in text or "indexed auction" in text:
+        return True
+    if re.search(r"\btrustee\s+(?:named|is)\s+[a-z]", text):
+        return True
+    if re.search(r"\btrustee\s+[a-z][a-z'-]+\s+[a-z]", text) and "schedule" not in text:
+        return True
+    if _contains_phrase(text, "auction") and not any(
+        _contains_phrase(text, word) for word in _SCHEDULE_WORDS
+    ):
+        return True
+    return False
+
+
 def _detect_capabilities(message: str) -> CapabilityFlags:
     text = message.casefold()
-    policy = any(word in text for word in _POLICY_WORDS)
-    auction = any(word in text for word in _AUCTION_WORDS)
-    public_record = any(word in text for word in _PUBLIC_WORDS)
+    policy = any(_contains_phrase(text, word) for word in _POLICY_WORDS)
+    schedule = any(_contains_phrase(text, word) for word in _SCHEDULE_WORDS)
+    public_record = any(_contains_phrase(text, word) for word in _PUBLIC_WORDS) or schedule
+    auction = any(_contains_phrase(text, word) for word in _AUCTION_WORDS) or (
+        _contains_phrase(text, "williamson")
+        and any(_contains_phrase(text, token) for token in ("july", "2026", "listing", "listings"))
+    )
+    # Person/address spreadsheet lookups — but not when the ask is clearly WCAD/public.
+    if _looks_like_storage_lookup(message) and not public_record:
+        auction = True
+    # County schedule/calendar → MCP; keep auction SQL when the ask also needs listings.
+    if schedule and not _wants_indexed_auction_rows(text):
+        auction = False
+        public_record = True
     return CapabilityFlags(policy=policy, auction=auction, public_record=public_record)
 
 
@@ -325,6 +451,12 @@ def _deterministic_entities(message: str) -> dict[str, str | int]:
         name = _bounded_name(trustee.group(1), max_tokens=4)
         if name is not None:
             entities["trustee"] = name
+    if last_first := _LAST_FIRST_NAME.search(message):
+        # Spreadsheet trustees often appear as "LAST, FIRST".
+        entities.setdefault(
+            "trustee",
+            f"{last_first.group(1).strip()}, {last_first.group(2).strip()}",
+        )
     if mortgagor := _MORTGAGOR.search(message):
         name = _bounded_name(mortgagor.group(1), max_tokens=3)
         if name is not None:
@@ -335,7 +467,7 @@ def _deterministic_entities(message: str) -> dict[str, str | int]:
     if zip_code := _ZIP.search(message):
         entities["zip_code"] = zip_code.group(1)
     if year := _YEAR.search(message):
-        entities["report_year"] = int(year.group(1))
+        entities["report_year"] = int(year.group(1) or year.group(2))
     text = message.casefold()
     for month, number in _MONTH_NAMES.items():
         if re.search(rf"\b{month}\b", text):
@@ -345,6 +477,25 @@ def _deterministic_entities(message: str) -> dict[str, str | int]:
         candidate = " ".join(city.group(1).split())
         if candidate.casefold() not in {"tx", "texas"} and not candidate[:1].isdigit():
             entities["city"] = candidate
+    if any(word in text for word in _SCHEDULE_WORDS):
+        entities["public_lookup"] = "county_schedule"
+    if (
+        "trustee" not in entities
+        and "address" not in entities
+        and "mortgagor_first_name" not in entities
+        and _looks_like_storage_lookup(message)
+    ):
+        remainder = re.sub(
+            r"\b(?:provide|details?|info|information|tell me|who is|find|search|"
+            r"look\s*up|show|about|for|on|me|the|a|an|please|named|is)\b",
+            " ",
+            message,
+            flags=re.I,
+        )
+        remainder = re.sub(r"[^A-Za-z,'\s-]", " ", remainder)
+        name = _bounded_name(" ".join(remainder.split()), max_tokens=4)
+        if name is not None and len(name.split()) >= 2:
+            entities["trustee"] = name
     return entities
 
 
@@ -624,30 +775,41 @@ class ControlledAgentGraph:
         if intent is None:
             classifier = self._services.classifier
             if classifier is None or state["retry_budget"]["classifier"] <= 0:
-                return {
-                    "intent": Intent.UNSUPPORTED_OR_UNSAFE,
-                    "intent_confidence": 0.4,
-                    "capabilities": caps,
-                }
-            try:
-                intent = await asyncio.wait_for(
-                    classifier.classify(state["message"]),
-                    timeout=self._services.classifier_timeout_seconds,
-                )
-                confidence = 0.65
-                if intent == Intent.KNOWLEDGE_POLICY:
-                    caps = CapabilityFlags(policy=True, auction=False, public_record=False)
-                elif intent == Intent.AUCTION_SEARCH:
+                if _looks_like_storage_lookup(state["message"]):
+                    intent = Intent.AUCTION_SEARCH
                     caps = CapabilityFlags(policy=False, auction=True, public_record=False)
-                elif intent == Intent.PUBLIC_PROPERTY_LOOKUP:
-                    caps = CapabilityFlags(policy=False, auction=False, public_record=True)
-                elif intent == Intent.COMBINED_RESEARCH:
-                    caps = CapabilityFlags(policy=True, auction=True, public_record=True)
+                    confidence = 0.7
                 else:
-                    caps = CapabilityFlags(policy=False, auction=False, public_record=False)
-            except (TimeoutError, OSError, ValueError):
-                intent = Intent.UNSUPPORTED_OR_UNSAFE
-                confidence = 0.4
+                    return {
+                        "intent": Intent.UNSUPPORTED_OR_UNSAFE,
+                        "intent_confidence": 0.4,
+                        "capabilities": caps,
+                    }
+            else:
+                try:
+                    intent = await asyncio.wait_for(
+                        classifier.classify(state["message"]),
+                        timeout=self._services.classifier_timeout_seconds,
+                    )
+                    confidence = 0.65
+                    if intent == Intent.KNOWLEDGE_POLICY:
+                        caps = CapabilityFlags(policy=True, auction=False, public_record=False)
+                    elif intent == Intent.AUCTION_SEARCH:
+                        caps = CapabilityFlags(policy=False, auction=True, public_record=False)
+                    elif intent == Intent.PUBLIC_PROPERTY_LOOKUP:
+                        caps = CapabilityFlags(policy=False, auction=False, public_record=True)
+                    elif intent == Intent.COMBINED_RESEARCH:
+                        caps = CapabilityFlags(policy=True, auction=True, public_record=True)
+                    else:
+                        caps = CapabilityFlags(policy=False, auction=False, public_record=False)
+                except (TimeoutError, OSError, ValueError):
+                    intent = Intent.UNSUPPORTED_OR_UNSAFE
+                    confidence = 0.4
+        # Prefer spreadsheet lookup over unsupported for names/addresses.
+        if intent == Intent.UNSUPPORTED_OR_UNSAFE and _looks_like_storage_lookup(state["message"]):
+            intent = Intent.AUCTION_SEARCH
+            caps = CapabilityFlags(policy=False, auction=True, public_record=False)
+            confidence = max(confidence, 0.75)
         _emit(
             "route.selected",
             {
@@ -667,8 +829,15 @@ class ControlledAgentGraph:
         ambiguous = (
             "mortgagor" in state["message"].casefold() and "mortgagor_first_name" not in entities
         ) or ("trustee" in state["message"].casefold() and "trustee" not in entities)
+        needs_llm = ambiguous or (
+            state.get("intent") == Intent.AUCTION_SEARCH
+            and "trustee" not in entities
+            and "address" not in entities
+            and "mortgagor_first_name" not in entities
+            and _looks_like_storage_lookup(state["message"])
+        )
         extractor = self._services.entity_extractor
-        if ambiguous and extractor is not None:
+        if needs_llm and extractor is not None:
             try:
                 extracted = await asyncio.wait_for(
                     extractor.extract(state["message"]),
@@ -697,6 +866,10 @@ class ControlledAgentGraph:
                             name = _bounded_name(value, max_tokens=4)
                             if name is not None:
                                 entities[key] = name
+                            elif _LAST_FIRST_NAME.search(value):
+                                entities[key] = " ".join(value.split())[:120]
+                            else:
+                                entities[key] = " ".join(value.split())[:120]
                         elif key.startswith("mortgagor_"):
                             name = _bounded_name(value, max_tokens=1)
                             if name is not None:
@@ -802,7 +975,7 @@ class ControlledAgentGraph:
                 "citations": citations,
                 "auction_match_confidence": confidence,
             }
-        except (TimeoutError, OSError):
+        except (TimeoutError, OSError, ValueError, RuntimeError):
             AUCTION_SEARCHES.labels("error").inc()
             _emit("retrieval.completed", {"source": "auction_index", "result_count": 0})
             return {
@@ -1058,6 +1231,15 @@ class ControlledAgentGraph:
     def _deterministic_synthesis(self, state: AgentState) -> tuple[str, list[str], float]:
         citation_ids = sorted(_citation_ids(state))
         intent = state.get("intent")
+        unavailable = list(state.get("unavailable_sources") or [])
+        if any("schedule_not_found" in item.reason for item in unavailable):
+            return (
+                "I checked the official Williamson County trustee-sale pages and did not find "
+                "a schedule matching that month. The county site may not have posted it yet—"
+                "please verify on the official pages.",
+                citation_ids,
+                0.55,
+            )
         if state.get("auction_results"):
             count = len(state["auction_results"])
             return (
@@ -1067,6 +1249,18 @@ class ControlledAgentGraph:
             )
         summary = state.get("property_summary")
         if summary is not None:
+            if summary.property_id.startswith("county-schedule"):
+                lines = [item for item in summary.limitations if item.strip()]
+                answer = (
+                    lines[0]
+                    if lines
+                    else "I found official county trustee-sale source materials."
+                )
+                return (
+                    answer,
+                    citation_ids,
+                    float(summary.match_confidence or 0.75),
+                )
             if summary.requires_user_selection:
                 return (
                     "I found multiple WCAD property candidates. Please select the correct record.",

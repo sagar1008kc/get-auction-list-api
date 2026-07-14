@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _SPACE = re.compile(r"\s+")
 _PUNCTUATION = re.compile(r"[_\W]+")
@@ -103,6 +103,28 @@ class AuctionSearchFilters(BaseModel):
             values[field] = normalize_search_text(values[field])
         return type(self).model_validate(values)
 
+    def has_structured_constraint(self) -> bool:
+        """True when the caller provided at least one non-pagination filter."""
+
+        return any(
+            value is not None
+            for value in (
+                self.trustee,
+                self.mortgagor_first,
+                self.mortgagor_last,
+                self.address,
+                self.city,
+                self.zip_code,
+                self.report_year,
+                self.report_month,
+                self.loan_type,
+                self.min_equity,
+                self.max_equity,
+                self.min_margin,
+                self.max_margin,
+            )
+        )
+
 
 class AuctionRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -120,6 +142,21 @@ class AuctionRecord(BaseModel):
     document_version_id: UUID | None = None
     source_coordinates: dict[str, object] = Field(default_factory=dict)
     match_score: float
+
+    @field_validator("source_coordinates", mode="before")
+    @classmethod
+    def coerce_source_coordinates(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, str):
+            import json
+
+            try:
+                parsed = json.loads(value) if value else {}
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return value
 
 
 class RetrievalMatch(BaseModel):

@@ -12,6 +12,34 @@ from get_auction_list_api.llm.embeddings import OpenAIEmbeddingTransport
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
 
 
+def _strict_response_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Adapt Pydantic JSON Schema for OpenAI strict structured outputs.
+
+    Strict mode requires every ``properties`` key to appear in ``required`` and
+    rejects optional defaults that omit fields from ``required``.
+    """
+
+    def walk(node: Any) -> Any:
+        if not isinstance(node, Mapping):
+            return node
+        out: dict[str, Any] = {key: walk(value) for key, value in node.items()}
+        out.pop("default", None)
+        if "properties" in out and isinstance(out["properties"], Mapping):
+            props = {key: walk(value) for key, value in out["properties"].items()}
+            out["properties"] = props
+            out["required"] = list(props.keys())
+            out["additionalProperties"] = False
+        if "$defs" in out and isinstance(out["$defs"], Mapping):
+            out["$defs"] = {key: walk(value) for key, value in out["$defs"].items()}
+        if "items" in out:
+            out["items"] = walk(out["items"])
+        if "anyOf" in out and isinstance(out["anyOf"], list):
+            out["anyOf"] = [walk(item) for item in out["anyOf"]]
+        return out
+
+    return cast(dict[str, Any], walk(dict(schema)))
+
+
 class OpenAIStructuredModel:
     """Validate structured model output at the application boundary."""
 
@@ -28,7 +56,7 @@ class OpenAIStructuredModel:
         user_prompt: str,
         response_type: type[ResponseT],
     ) -> ResponseT:
-        schema = response_type.model_json_schema()
+        schema = _strict_response_schema(response_type.model_json_schema())
         try:
             response = await self._client.responses.create(
                 model=self._model,

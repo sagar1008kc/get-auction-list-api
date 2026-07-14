@@ -74,6 +74,7 @@ class AsyncDatabase:
                 min_size=self._min_size,
                 max_size=self._max_size,
                 command_timeout=self._command_timeout,
+                statement_cache_size=0,
                 server_settings={"application_name": "get-auction-list-api"},
             )
         return self

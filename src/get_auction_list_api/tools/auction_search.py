@@ -141,7 +141,7 @@ class AuctionSearchService:
                 )
             )
         cta = None
-        if records and (filters.trustee or filters.mortgagor_first or filters.mortgagor_last):
+        if records:
             cta = AuctionCTA(
                 filters=CTAFilters(
                     trustee=filters.trustee,

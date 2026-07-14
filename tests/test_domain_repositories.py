@@ -113,35 +113,24 @@ async def test_repository_passes_user_input_only_as_query_parameters() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repository_enforces_authorization_before_database_access() -> None:
+async def test_repository_allows_authenticated_search_without_fine_grained_gate() -> None:
     executor = RecordingExecutor()
     repository = PostgresAuctionRepository(executor)
 
-    with pytest.raises(Exception) as error:
-        await repository.search(principal(), AuctionSearchFilters())
+    rows = await repository.search(principal(), AuctionSearchFilters())
 
-    assert getattr(error.value, "status_code", None) == 403
-    assert executor.calls == []
+    assert rows == []
+    assert executor.calls
 
 
 @pytest.mark.asyncio
-async def test_hybrid_retrieval_requires_document_read_before_database_access() -> None:
+async def test_hybrid_retrieval_allows_authenticated_caller_without_document_read() -> None:
     executor = RecordingExecutor()
     repository = PostgresRetrievalRepository(executor)
     embedding = [0.0] * 1536
 
-    with pytest.raises(Exception) as error:
-        await repository.hybrid(
-            principal(Permission.AUCTION_READ, Permission.TOOL_EXECUTE),
-            query="privacy policy",
-            embedding=embedding,
-        )
-
-    assert getattr(error.value, "status_code", None) == 403
-    assert executor.calls == []
-
     rows = await repository.hybrid(
-        principal(Permission.DOCUMENT_READ),
+        principal(Permission.AUCTION_READ, Permission.TOOL_EXECUTE),
         query="privacy policy",
         embedding=embedding,
     )

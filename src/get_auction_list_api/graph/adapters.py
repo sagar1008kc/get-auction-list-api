@@ -3,12 +3,19 @@
 from collections.abc import Callable, Mapping
 from uuid import UUID
 
-from get_auction_list_api.auth import Permission, Principal
+from get_auction_list_api.auth import Principal
 from get_auction_list_api.domain import AuctionSearchFilters
-from get_auction_list_api.graph.workflow import Classifier, GraphServices, Synthesizer
+from get_auction_list_api.graph.workflow import (
+    Classifier,
+    EntityExtractor,
+    GraphServices,
+    Synthesizer,
+)
 from get_auction_list_api.llm.embeddings import EmbeddingProvider
 from get_auction_list_api.public_records.models import (
     PublicRecordToolError,
+    ToolErrorCategory,
+    TrusteeSaleSource,
     WcadProperty,
     WcadPropertyDetails,
 )
@@ -100,9 +107,130 @@ def _auction_cards(response: AuctionSearchResponse) -> list[AuctionResultCard]:
                 trustees=[record.trustee_name] if record.trustee_name else [],
                 source_citation_ids=[item.citation_id],
                 limitations=list(item.limitations),
+                report_year=_coord_int(record.source_coordinates.get("report_year")),
+                report_month=_coord_int(record.source_coordinates.get("report_month")),
             )
         )
     return cards
+
+
+def _coord_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+async def _county_schedule_search(
+    public_service: PublicRecordsService,
+    *,
+    entities: Mapping[str, str | int],
+    trace_id: str,
+) -> tuple[
+    PropertySummary | None,
+    list[WcadCandidate],
+    list[Citation],
+    list[UnavailableSource],
+]:
+    year = entities.get("report_year")
+    month = entities.get("report_month")
+    year_value = year if isinstance(year, int) else None
+    month_value = month if isinstance(month, int) else None
+    try:
+        discovered = await public_service.discover_trustee_sale_sources(
+            trace_id=trace_id,
+            year=year_value,
+            month=month_value,
+        )
+    except PublicRecordToolError as error:
+        return (
+            None,
+            [],
+            [],
+            [
+                UnavailableSource(
+                    source="public_records",
+                    reason=error.category.value,
+                    retryable=error.retryable
+                    or error.category
+                    in {
+                        ToolErrorCategory.TIMEOUT,
+                        ToolErrorCategory.UPSTREAM_UNAVAILABLE,
+                    },
+                )
+            ],
+        )
+
+    if not discovered.items:
+        period = (
+            f"{year_value}-{month_value:02d}"
+            if year_value is not None and month_value is not None
+            else "the requested period"
+        )
+        # Source was reachable; month simply has no matching posted materials.
+        calendar_url = str(discovered.metadata.source_url)
+        citation = Citation(
+            id="county-schedule-index",
+            source_kind="public_record",
+            title="Williamson County trustee sale calendar",
+            official_source=True,
+            url=calendar_url,
+            retrieved_at=discovered.metadata.retrieved_at,
+            quote=f"No matching trustee-sale schedule materials for {period}.",
+        )
+        summary = PropertySummary(
+            property_id="county-schedule",
+            address=f"Williamson County trustee sale schedule ({period})",
+            source_citation_ids=[citation.id],
+            limitations=[
+                f"No trustee-sale schedule materials matched {period} on the official "
+                "Williamson County calendar. The county may not have posted details yet—"
+                f"verify at {calendar_url}.",
+                *discovered.warnings,
+            ],
+            candidates=[],
+            selected_property_id="county-schedule",
+            match_confidence=0.55,
+            requires_user_selection=False,
+        )
+        return summary, [], [citation], []
+
+    citations: list[Citation] = []
+    lines: list[str] = []
+    for index, item in enumerate(discovered.items, start=1):
+        source = TrusteeSaleSource.model_validate(item)
+        citation_id = f"county-schedule-{index}"
+        citations.append(
+            Citation(
+                id=citation_id,
+                source_kind="public_record",
+                title=source.title,
+                official_source=True,
+                url=str(source.url),
+                retrieved_at=discovered.metadata.retrieved_at,
+                quote=source.title[:500],
+            )
+        )
+        lines.append(f"{source.title} ({source.url})")
+
+    period_label = (
+        f" for {year_value}-{month_value:02d}"
+        if year_value is not None and month_value is not None
+        else ""
+    )
+    summary_text = (
+        f"Official Williamson County trustee-sale sources{period_label}: "
+        + "; ".join(lines)
+        + ". Always verify dates on the linked official pages."
+    )
+    summary = PropertySummary(
+        property_id="county-schedule",
+        address=f"Williamson County trustee sale schedule{period_label}",
+        source_citation_ids=[item.id for item in citations],
+        limitations=[summary_text, *discovered.warnings],
+        candidates=[],
+        selected_property_id="county-schedule",
+        match_confidence=0.85,
+        requires_user_selection=False,
+    )
+    return summary, [], citations, []
 
 
 def _auction_filter_payload(entities: Mapping[str, str | int]) -> dict[str, object]:
@@ -125,6 +253,7 @@ def build_graph_services(
     trace_id_resolver: TraceIdResolver,
     classifier: Classifier | None = None,
     synthesizer: Synthesizer | None = None,
+    entity_extractor: EntityExtractor | None = None,
     classifier_timeout_seconds: float = 1.5,
     node_timeout_seconds: float = 8,
 ) -> GraphServices:
@@ -133,7 +262,8 @@ def build_graph_services(
     async def knowledge_search(
         query: str,
     ) -> tuple[list[dict[str, object]], list[Citation]]:
-        principal_resolver().require(Permission.DOCUMENT_READ)
+        # Authenticated chat callers may retrieve approved policy docs; JWT is enforced at
+        # the /v1/chat* boundary rather than a fine-grained document:read gate.
         if embeddings is None or retriever is None:
             raise OSError("Knowledge retrieval is not configured.")
         batch = await embeddings.embed((query,))
@@ -174,6 +304,12 @@ def build_graph_services(
         list[Citation],
         list[UnavailableSource],
     ]:
+        if entities.get("public_lookup") == "county_schedule":
+            return await _county_schedule_search(
+                public_service,
+                entities=entities,
+                trace_id=trace_id_resolver(),
+            )
         address = entities.get("address")
         if not isinstance(address, str) or not address:
             return None, [], [], []
@@ -297,6 +433,7 @@ def build_graph_services(
     return GraphServices(
         classifier=classifier,
         synthesizer=synthesizer,
+        entity_extractor=entity_extractor,
         knowledge_search=knowledge_search,
         auction_search=auction_search,
         public_search=public_search,

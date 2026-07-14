@@ -160,8 +160,9 @@ POSTGRES_PASSWORD="$(openssl rand -hex 24)" docker compose up -d postgres
 - The allowlist includes only configured HTTPS hosts; tool callers cannot supply an
   arbitrary destination. DNS and every redirect are revalidated.
 - XLSX and PDF are supported parsing boundaries; legacy binary XLS is not implemented.
-- The production source fetch/storage/publisher/embedding handler is an integration
-  boundary and must be supplied before enabling workers.
+- The worker loads
+  `get_auction_list_api.ingestion.handler:handle_ingestion_job` (or another trusted
+  callable) for Storage downloads and approved policy URL publication.
 - The default graph is deterministic scaffolding, not a configured model-provider
   deployment. Live-provider, representative-load, restore, failover, and source-policy
   approval remain release gates.
@@ -175,10 +176,43 @@ After applying `20260714040000_ai_backend_foundations.sql`:
 - Trustee / mortgagor / address auction search reads **`auction_records`** (and related
   mortgagor tables), not document chunks. Chunk ingestion alone does not populate
   trustee results.
-- Populate `auction_records` with normalized trustee names (same normalization as
-  search filters), preferably `stable_key`, report year/month, and mortgagors as needed
-  — for example the July 2026 auction list after a spreadsheet → auction-row publish
-  step. That publisher is not shipped as a complete handler in this repo.
+- Populate `auction_records` from the approved Storage spreadsheet using the built-in
+  worker handler:
+
+  ```sh
+  export GET_AUCTION_LIST_INGESTION_HANDLER=get_auction_list_api.ingestion.handler:handle_ingestion_job
+  uv run auction-ingestion-worker
+  ```
+
+  Enqueue (ops JWT) the July 2026 index:
+
+  ```json
+  {
+    "source_type": "supabase_storage",
+    "storage_bucket": "auction_files",
+    "storage_path": "williamson_county/getAuctionList_July_2026.xlsx",
+    "document_type": "auction_spreadsheet"
+  }
+  ```
+
+  The handler downloads with the service role (never signed browser URLs), writes
+  `documents` / `document_versions`, and upserts normalized `auction_records` /
+  `auction_record_mortgagors` with `report_year=2026`, `report_month=7`, `stable_key`,
+  and sheet/row lineage. Verify with `search_auction_records` filtered to that period.
+- Sync approved policy HTML into RAG chunks:
+
+  ```json
+  {
+    "source_ids": ["getauctionlist-privacy", "getauctionlist-disclaimer"],
+    "mode": "incremental"
+  }
+  ```
+
+  via `POST /v1/ingestion/sources/sync`, or enqueue `registered_url` jobs with those
+  `source_id` registry keys.
 - An empty index must return the standard no-match answer with `cta=null` (never 500).
   Emit `FinalResponse.cta` only when indexed search returns non-empty
   `auction_results`, copying filters from the matched entities.
+- County trustee-sale **schedule/calendar** questions route to MCP public-record tools
+  (`county.discover_trustee_sale_sources`), not SQL auction search. Missing schedules
+  or MCP timeouts surface as `unavailable_sources` without inventing dates.

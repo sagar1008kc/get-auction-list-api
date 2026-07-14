@@ -25,7 +25,6 @@ from get_auction_list_api.public_records.models import (
 
 AuditSink = Callable[[str, str, int, str | None], Awaitable[None]]
 PARSER_VERSION = "public-records/1.0"
-COUNTY_INDEX = "https://www.wilcotx.gov/308/Foreclosure-Trustee-Sales"
 COUNTY_DOCUMENTS = "https://apps.wilco.org/countyclerk/trustee_sales/"
 WCAD_SEARCH = "https://search.wcad.org/"
 _HTTP_URL = TypeAdapter(HttpUrl)
@@ -87,30 +86,125 @@ class PublicRecordsService:
         year: int | None = None,
         month: int | None = None,
     ) -> ToolResult:
-        response, hit = await self._client.get(COUNTY_INDEX)
-        soup = BeautifulSoup(response.body, "html.parser")
+        # The wilcotx.gov landing page is mostly an iframe; the live calendar is on
+        # apps.wilco.org with per-month sale dates (e.g. "July 7, 2026").
+        calendar_response, calendar_hit = await self._client.get(COUNTY_DOCUMENTS)
+        calendar_soup = BeautifulSoup(calendar_response.body, "html.parser")
         sources: list[TrusteeSaleSource] = []
-        for link in soup.select("a[href]"):
+        month_names = (
+            "",
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        )
+
+        for link in calendar_soup.select("a[href]"):
+            href = str(link.get("href", "")).strip()
+            title = _text(link.get_text(" ", strip=True))
+            if not title or not href:
+                continue
+            lowered = f"{title} {href}".casefold()
+            # Calendar entries look like "July 7, 2026" → July/files.aspx
+            date_match = re.search(
+                r"\b(january|february|march|april|may|june|july|august|"
+                r"september|october|november|december)\s+(\d{1,2}),\s*(20\d{2})\b",
+                title,
+                re.IGNORECASE,
+            )
+            if date_match is None and "files.aspx" not in lowered:
+                continue
+            entry_month = None
+            entry_year = None
+            if date_match is not None:
+                entry_month = month_names.index(date_match.group(1).casefold())
+                entry_year = int(date_match.group(3))
+            elif month is not None:
+                month_name = month_names[month]
+                if month_name not in lowered:
+                    continue
+            if year is not None and entry_year is not None and entry_year != year:
+                continue
+            if year is not None and entry_year is None and str(year) not in lowered:
+                continue
+            if month is not None and entry_month is not None and entry_month != month:
+                continue
+            if month is not None and entry_month is None:
+                month_name = month_names[month]
+                month_token_ok = (
+                    re.search(rf"(?:^|\D)0?{month}(?:\D|$)", lowered) is not None
+                    or month_name in lowered
+                )
+                if not month_token_ok:
+                    continue
+            candidate = urljoin(calendar_response.final_url, href)
+            sources.append(
+                TrusteeSaleSource(
+                    title=title if date_match is None else f"Trustee sale date: {title}",
+                    url=_url(candidate),
+                    document_type="webpage",
+                )
+            )
+
+        # Also retain any PDF/notice links on the same calendar host.
+        for link in calendar_soup.select("a[href]"):
             href = str(link.get("href", ""))
             title = _text(link.get_text(" ", strip=True))
-            candidate = urljoin(response.final_url, href)
+            candidate = urljoin(calendar_response.final_url, href)
             lowered = f"{title} {href}".casefold()
-            if not title or not any(
-                token in lowered for token in ("trustee", "foreclosure", ".pdf")
-            ):
+            if ".pdf" not in lowered:
                 continue
             if year is not None and str(year) not in lowered:
                 continue
-            if month is not None and not re.search(rf"(?:^|\D)0?{month}(?:\D|$)", lowered):
-                continue
+            if month is not None:
+                month_name = month_names[month]
+                month_token_ok = (
+                    re.search(rf"(?:^|\D)0?{month}(?:\D|$)", lowered) is not None
+                    or month_name in lowered
+                )
+                if not month_token_ok:
+                    continue
             sources.append(
                 TrusteeSaleSource(
-                    title=title,
+                    title=title or "County trustee-sale PDF",
                     url=_url(candidate),
-                    document_type="pdf" if ".pdf" in href.casefold() else "webpage",
+                    document_type="pdf",
                 )
             )
+
+        # De-dupe while preserving order.
+        deduped: list[TrusteeSaleSource] = []
+        seen: set[str] = set()
+        for source in sources:
+            key = str(source.url)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(source)
+        sources = deduped
+
         if not sources:
+            # Page fetched successfully but no month match — not an upstream outage.
+            if year is not None or month is not None:
+                return await self._result(
+                    tool="county.discover_trustee_sale_sources",
+                    trace_id=trace_id,
+                    source_url=calendar_response.final_url,
+                    items=(),
+                    cache_hit=calendar_hit,
+                    warnings=(
+                        "No trustee-sale schedule materials matched the requested year/month "
+                        "on the approved county calendar.",
+                    ),
+                )
             raise PublicRecordToolError(
                 ToolErrorCategory.CONTRACT_CHANGED,
                 "The county source layout no longer matches the supported contract.",
@@ -118,9 +212,9 @@ class PublicRecordsService:
         return await self._result(
             tool="county.discover_trustee_sale_sources",
             trace_id=trace_id,
-            source_url=response.final_url,
+            source_url=calendar_response.final_url,
             items=sources,
-            cache_hit=hit,
+            cache_hit=calendar_hit,
         )
 
     async def search_foreclosure_records(

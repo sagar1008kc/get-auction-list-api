@@ -14,8 +14,10 @@ from get_auction_list_api.dependencies import (
     get_dependencies,
 )
 from get_auction_list_api.errors import AppError, ErrorCode
+from get_auction_list_api.ingestion.sources import SourceRegistry
 
 router = APIRouter(prefix="/v1/ingestion", tags=["operations"])
+_REGISTRY = SourceRegistry()
 
 
 class IngestionJobRequest(BaseModel):
@@ -24,7 +26,7 @@ class IngestionJobRequest(BaseModel):
     source_type: Literal["supabase_storage", "registered_url"]
     storage_bucket: str | None = Field(default=None, max_length=100)
     storage_path: str | None = Field(default=None, max_length=1000)
-    source_id: UUID | None = None
+    source_id: str | None = Field(default=None, max_length=120)
     document_type: str = Field(max_length=80)
     force_new_version: bool = False
 
@@ -34,16 +36,30 @@ class IngestionJobRequest(BaseModel):
             self.storage_bucket and self.storage_path
         ):
             raise ValueError("Storage jobs require bucket and path.")
-        if self.source_type == "registered_url" and self.source_id is None:
-            raise ValueError("URL jobs require a registered source_id.")
+        if self.source_type == "registered_url":
+            if not self.source_id:
+                raise ValueError("URL jobs require a registered source_id.")
+            try:
+                _REGISTRY.get(self.source_id)
+            except ValueError as error:
+                raise ValueError("source_id is not an approved registered source.") from error
         return self
 
 
 class SourceSyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_ids: list[UUID] = Field(min_length=1, max_length=100)
+    source_ids: list[str] = Field(min_length=1, max_length=100)
     mode: Literal["incremental", "full_reconcile"] = "incremental"
+
+    @model_validator(mode="after")
+    def approved_sources_only(self) -> "SourceSyncRequest":
+        for source_id in self.source_ids:
+            try:
+                _REGISTRY.get(source_id)
+            except ValueError as error:
+                raise ValueError(f"Unknown approved source_id: {source_id}") from error
+        return self
 
 
 def _operations(dependencies: AppDependencies) -> IngestionOperations:

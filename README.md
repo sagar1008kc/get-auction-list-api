@@ -99,8 +99,14 @@ optional Ragas/Langfuse adapters, and the importable Grafana dashboard.
 
 The framework-independent packages under `ingestion`, `parsers`, `normalization`,
 `tools`, `rag`, and `llm` implement the approved source registry and worker boundaries.
-Network fetching is deliberately outside parser and pipeline contracts, so normal tests
-never contact live policy or Williamson County sources.
+The built-in worker handler is
+`get_auction_list_api.ingestion.handler:handle_ingestion_job`. It downloads
+`supabase://auction_files/...` objects with the service role (never signed browser
+URLs), publishes spreadsheet rows into `auction_records`, and ingests approved
+policy HTML into `document_chunks` with embeddings.
+
+Network fetching for parsers themselves stays injectable so normal tests never contact
+live policy or Williamson County sources.
 
 The PostgreSQL queue uses atomic `FOR UPDATE SKIP LOCKED` claims, owner-checked
 heartbeats/completion, stale lease recovery, bounded retry, and dead-letter transitions.
@@ -108,9 +114,12 @@ Workers must generate an unpredictable lease token for each claim cycle and must
 publish through the transactional publisher boundary.
 
 Structured auction filters remain parameterized PostgreSQL calls; exact auction filters
-never use vector retrieval. Policy retrieval independently queries FTS and pgvector,
-applies reciprocal-rank fusion and budgets, removes duplicate evidence, marks all source
-content untrusted, and constructs citations before any synthesis caller receives context.
+never use vector retrieval. County schedule/calendar questions route to MCP public-record
+tools instead of the auction SQL index. Policy retrieval independently queries FTS and
+pgvector, applies reciprocal-rank fusion and budgets, removes duplicate evidence, marks
+all source content untrusted, and constructs citations before any synthesis caller
+receives context. Answers without evidence do not invent auction rows, schedules, or
+policy text; CTA is emitted only when indexed `auction_results` are non-empty.
 
 ## Chat orchestration and public records
 

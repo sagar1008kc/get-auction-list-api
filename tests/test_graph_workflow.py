@@ -122,6 +122,45 @@ async def test_auction_only_routing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_name_detail_lookup_routes_to_auction_search() -> None:
+    captured: dict[str, object] = {}
+
+    async def auction(
+        entities: Mapping[str, str | int],
+    ) -> tuple[list[AuctionResultCard], list[Citation]]:
+        captured["entities"] = dict(entities)
+        return await _auction(entities)
+
+    graph = ControlledAgentGraph(GraphServices(auction_search=auction))
+    response = await graph.run(_state("provide details about ZAVALA, ANGELA?"))
+    assert response.intent == Intent.AUCTION_SEARCH
+    assert response.auction_results
+    entities = captured["entities"]
+    assert isinstance(entities, dict)
+    assert "ZAVALA" in str(entities.get("trustee", "")).upper()
+    assert "ANGELA" in str(entities.get("trustee", "")).upper()
+
+
+@pytest.mark.asyncio
+async def test_street_address_lookup_routes_to_auction_search() -> None:
+    captured: dict[str, object] = {}
+
+    async def auction(
+        entities: Mapping[str, str | int],
+    ) -> tuple[list[AuctionResultCard], list[Citation]]:
+        captured["entities"] = dict(entities)
+        return await _auction(entities)
+
+    graph = ControlledAgentGraph(GraphServices(auction_search=auction))
+    response = await graph.run(_state("1021 Cowberry Dr"))
+    assert response.intent == Intent.AUCTION_SEARCH
+    assert response.auction_results
+    entities = captured["entities"]
+    assert isinstance(entities, dict)
+    assert "cowberry" in str(entities.get("address", "")).casefold()
+
+
+@pytest.mark.asyncio
 async def test_public_record_only_routing() -> None:
     graph = ControlledAgentGraph(GraphServices(public_search=_public))
     response = await graph.run(_state("Look up WCAD property at 1021 Cowberry Dr"))
